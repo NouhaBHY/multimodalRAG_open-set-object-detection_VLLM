@@ -1,0 +1,11 @@
+flask==3.0.0
+flask-cors==4.0.0
+torch==2.1.2
+torchvision==0.16.2
+transformers==4.36.2
+bitsandbytes==0.41.3
+accelerate==0.25.0
+Pillow==10.1.0
+numpy==1.26.2
+gunicorn==21.2.0
+requests==2.31.0

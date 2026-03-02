@@ -1,0 +1,215 @@
+name: multimodal-detection
+
+services:
+  # ═══════════════════════════════════════════════════════════════
+  # Data Stores
+  # ═══════════════════════════════════════════════════════════════
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.3
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ═══════════════════════════════════════════════════════════════
+  # Shared ML Base Image (PyTorch installed ONCE, reused by both ML services)
+  # ═══════════════════════════════════════════════════════════════
+
+  ml_base:
+    build:
+      context: ./services/ml_base
+      dockerfile: Dockerfile
+    image: multimodal-detection-ml_base:latest
+
+  # ═══════════════════════════════════════════════════════════════
+  # Model Quantization (run once to download, quantize & save models)
+  # ═══════════════════════════════════════════════════════════════
+
+  quantize_models:
+    image: multimodal-detection-ml_base:latest
+    depends_on:
+      - ml_base
+    container_name: quantize_models
+    volumes:
+      - model_cache:/root/.cache/huggingface
+      - quantized_models:/models/quantized
+      - ./scripts:/app/scripts
+    environment:
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - HF_HOME=/root/.cache/huggingface
+    command: python /app/scripts/quantize_models.py --models all --output-dir /models/quantized
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - app-network
+    profiles:
+      - quantize
+
+  # ═══════════════════════════════════════════════════════════════
+  # Microservices
+  # ═══════════════════════════════════════════════════════════════
+
+  embedding_service:
+    build:
+      context: ./services/embedding_service
+      dockerfile: Dockerfile
+    depends_on:
+      - ml_base
+    container_name: embedding_service
+    ports:
+      - "5001:5001"
+    volumes:
+      - model_cache:/root/.cache/huggingface
+      - quantized_models:/models/quantized:ro
+    environment:
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - HF_HOME=/root/.cache/huggingface
+      - QUANTIZED_MODELS_DIR=/models/quantized
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  storage_service:
+    build:
+      context: ./services/storage_service
+      dockerfile: Dockerfile
+    container_name: storage_service
+    ports:
+      - "5002:5002"
+    environment:
+      - ELASTICSEARCH_HOST=elasticsearch
+      - ELASTICSEARCH_PORT=9200
+      - MONGODB_HOST=mongodb
+      - MONGODB_PORT=27017
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  detection_service:
+    build:
+      context: ./services/detection_service
+      dockerfile: Dockerfile
+    depends_on:
+      - ml_base
+    container_name: detection_service
+    ports:
+      - "5003:5003"
+    volumes:
+      - model_cache:/root/.cache/huggingface
+      - quantized_models:/models/quantized:ro
+    environment:
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - HF_HOME=/root/.cache/huggingface
+      - QUANTIZED_MODELS_DIR=/models/quantized
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  api_gateway:
+    build:
+      context: ./services/api_gateway
+      dockerfile: Dockerfile
+    container_name: api_gateway
+    ports:
+      - "5000:5000"
+    environment:
+      - EMBEDDING_SERVICE_URL=http://embedding_service:5001
+      - STORAGE_SERVICE_URL=http://storage_service:5002
+      - DETECTION_SERVICE_URL=http://detection_service:5003
+    depends_on:
+      - embedding_service
+      - storage_service
+      - detection_service
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════
+  # Frontend
+  # ═══════════════════════════════════════════════════════════════
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api_gateway
+    networks:
+      - app-network
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════
+# Volumes & Networks
+# ═══════════════════════════════════════════════════════════════
+
+volumes:
+  es_data:
+    driver: local
+  mongo_data:
+    driver: local
+  model_cache:
+    driver: local
+  quantized_models:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,10 @@
+# CPU-only override — use with: docker compose -f docker-compose.yml -f docker-compose.cpu.yml up --build
+
+services:
+  embedding_service:
+    deploy:
+      resources: {}
+
+  detection_service:
+    deploy:
+      resources: {}

@@ -229,6 +229,7 @@ sudo docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 | Detection Service | http://localhost:5003/health |
 | Elasticsearch | http://localhost:9200 |
 | MongoDB | localhost:27017 |
+| **Dozzle (Logs)** | http://localhost:9999 |
 
 ## Usage
 
@@ -251,6 +252,12 @@ sudo docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
 
 ### 4. View History
 - The **History** tab shows all past detection results with details
+
+### 5. Monitor Logs
+- Open http://localhost:9999 to access **Dozzle**, a real-time Docker log viewer
+- View live stdout/stderr from every running container in a single dashboard
+- Filter by container, search log content, and pin specific services
+- No configuration required — Dozzle reads directly from the Docker socket
 
 ## API Reference
 

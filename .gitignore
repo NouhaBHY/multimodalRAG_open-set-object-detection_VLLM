@@ -43,10 +43,14 @@ docker-compose.override.yml
 frontend/node_modules/
 frontend/build/
 
-# Models cache (large)
-models/
+# Models (downloaded & quantized locally — NOT pushed to git)
+models/cache/
+models/quantized/
+!models/cache/.gitkeep
+!models/quantized/.gitkeep
 *.bin
 *.safetensors
+*.gguf
 
 # Data volumes
 data/

@@ -62,13 +62,14 @@ services:
       - ml_base
     container_name: quantize_models
     volumes:
-      - model_cache:/root/.cache/huggingface
-      - quantized_models:/models/quantized
+      - ./models/cache:/root/.cache/huggingface
+      - ./models/quantized:/models/quantized
       - ./scripts:/app/scripts
     environment:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - HF_HOME=/root/.cache/huggingface
-    command: python /app/scripts/quantize_models.py --models all --output-dir /models/quantized
+    entrypoint: ["python", "/app/scripts/quantize_models.py", "--output-dir", "/models/quantized"]
+    command: ["--models", "all"]
     deploy:
       resources:
         reservations:
@@ -95,8 +96,8 @@ services:
     ports:
       - "5001:5001"
     volumes:
-      - model_cache:/root/.cache/huggingface
-      - quantized_models:/models/quantized:ro
+      - ./models/cache:/root/.cache/huggingface
+      - ./models/quantized:/models/quantized:ro
     environment:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - HF_HOME=/root/.cache/huggingface
@@ -143,8 +144,8 @@ services:
     ports:
       - "5003:5003"
     volumes:
-      - model_cache:/root/.cache/huggingface
-      - quantized_models:/models/quantized:ro
+      - ./models/cache:/root/.cache/huggingface
+      - ./models/quantized:/models/quantized:ro
     environment:
       - TRANSFORMERS_CACHE=/root/.cache/huggingface
       - HF_HOME=/root/.cache/huggingface
@@ -204,10 +205,6 @@ volumes:
   es_data:
     driver: local
   mongo_data:
-    driver: local
-  model_cache:
-    driver: local
-  quantized_models:
     driver: local
 
 networks:

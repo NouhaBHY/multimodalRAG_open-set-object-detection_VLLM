@@ -10,9 +10,9 @@ graph TB
     end
     
     subgraph "Microservices"
-        subgraph "ML Base Image<br/>(PyTorch + Transformers — built once)"
-            ES[Embedding Service<br/>Flask - Port 5001<br/>CLIP + LLaVA]
-            DS[Detection Service<br/>Flask - Port 5003<br/>Grounding DINO]
+        subgraph "ML Base Image<br/>(PyTorch + Transformers 4.47 — built once)"
+            ES[Embedding Service<br/>Flask - Port 5001<br/>CLIP FP16 + LLaVA 4-bit]
+            DS[Detection Service<br/>Flask - Port 5003<br/>Grounding DINO FP16]
         end
         SS[Storage Service<br/>Flask - Port 5002<br/>ES + MongoDB ops]
     end
@@ -20,6 +20,11 @@ graph TB
     subgraph "Data Stores"
         ELASTIC[(Elasticsearch<br/>Port 9200<br/>Embeddings + Text)]
         MONGO[(MongoDB<br/>Port 27017<br/>Images)]
+    end
+
+    subgraph "Local Model Storage"
+        CACHE[models/cache/<br/>HF download cache ~16 GB]
+        QUANT[models/quantized/<br/>CLIP 293 MB · LLaVA 3.8 GB · DINO 448 MB]
     end
     
     UI -->|HTTP REST| GW
@@ -34,6 +39,10 @@ graph TB
     
     SS -.->|Search similar embeddings| ELASTIC
     SS -.->|Store/retrieve images| MONGO
+
+    QUANT -.->|bind mount| ES
+    QUANT -.->|bind mount| DS
+    CACHE -.->|bind mount| ES
 ```
 
 # Use Case Diagram
@@ -158,16 +167,18 @@ classDiagram
         -model: CLIPModel
         -processor: CLIPProcessor
         -device: str
-        +__init__(model_name, quantized)
+        -QUANTIZED_NAME: clip-vit-base-patch32-8bit
+        -format: FP16 (293 MB)
         +generate_embedding(image) ndarray
         +generate_text_embedding(text) ndarray
     }
 
     class LLaVADescriber {
-        -model: LlavaForConditionalGeneration
+        -model: AutoModelForImageTextToText
         -processor: AutoProcessor
         -device: str
-        +__init__(model_name, quantized)
+        -QUANTIZED_NAME: llava-1.5-7b-4bit
+        -format: 4-bit NF4 (3.8 GB)
         +generate_description(image) str
         -_format_output(raw_text) str
     }
@@ -176,7 +187,8 @@ classDiagram
         -model: AutoModelForZeroShotObjectDetection
         -processor: AutoProcessor
         -device: str
-        +__init__(model_name, quantized)
+        -QUANTIZED_NAME: grounding-dino-base-fp16
+        -format: FP16 (448 MB)
         +detect(image, prompt, threshold) DetectionResult
         +annotate_image(image, result) Image
     }
@@ -249,3 +261,35 @@ classDiagram
     APIGateway --> StorageService
     APIGateway --> DetectionService
 ```
+
+# Model Memory & Storage Requirements
+
+## GPU VRAM Usage
+
+| Model | HuggingFace ID | Format | VRAM at Inference |
+|---|---|---|---|
+| CLIP ViT-B/32 | `openai/clip-vit-base-patch32` | FP16 | ~300 MB |
+| LLaVA 1.5 7B | `llava-hf/llava-1.5-7b-hf` | 4-bit NF4 | ~3.8 GB |
+| Grounding DINO | `IDEA-Research/grounding-dino-base` | FP16 | ~900 MB |
+| **Total (all 3)** | | | **~5-6.5 GB** |
+
+> Tested on NVIDIA RTX 4070 Laptop GPU (8 GB VRAM). All 3 models load simultaneously with headroom for inference buffers.
+
+## Disk Storage
+
+| Directory | Contents | Size |
+|---|---|---|
+| `models/cache/` | HuggingFace download cache (original FP32/FP16 weights) | ~16 GB |
+| `models/quantized/clip-vit-base-patch32-8bit/` | CLIP FP16 weights + processor | 293 MB |
+| `models/quantized/llava-1.5-7b-4bit/` | LLaVA 4-bit NF4 weights + processor | 3.8 GB |
+| `models/quantized/grounding-dino-base-fp16/` | Grounding DINO FP16 weights + processor | 448 MB |
+| **Total disk** | cache + quantized | **~20.5 GB** |
+
+## System RAM
+
+| Scenario | RAM Needed |
+|---|---|
+| Building Docker images | ~4 GB |
+| Running quantization script | ~16 GB (LLaVA quantization peak) |
+| Running all services | ~8-12 GB |
+| **Recommended minimum** | **16 GB (32 GB preferred)** |

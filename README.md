@@ -61,13 +61,15 @@ A microservices-based object detection system that combines **CLIP**, **LLaVA**,
 
 ## Models
 
-All three models are downloaded from **HuggingFace Hub**, quantized once via `scripts/quantize_models.py`, and saved to a persistent Docker volume. Services load only the saved quantized weights at startup — no re-downloading or re-quantizing on each restart.
+All three models are downloaded from **HuggingFace Hub**, quantized once via `scripts/quantize_models.py`, and saved locally to `./models/quantized/`. Services load only the saved quantized weights at startup — no re-downloading or re-quantizing on each restart.
 
-| Model (HuggingFace ID) | Service | Purpose | Saved Format | Params | Approx. Size on Disk |
+The original (full-precision) downloads are cached in `./models/cache/` so you keep a backup of the original weights even if HuggingFace removes the models in the future.
+
+| Model (HuggingFace ID) | Service | Purpose | Saved Format | Params | Size on Disk |
 |---|---|---|---|---|---|
-| `openai/clip-vit-base-patch32` | Embedding Service | Image & text embeddings (512-dim) | FP16 (half-precision) | 151M | ~300 MB |
-| `llava-hf/llava-1.5-7b-hf` | Embedding Service | Image description generation | 4-bit NF4 (bitsandbytes, double quantization) | 7B | ~4 GB |
-| `IDEA-Research/grounding-dino-base` | Detection Service | Zero-shot object detection | 8-bit INT8 (bitsandbytes) | 172M | ~200 MB |
+| `openai/clip-vit-base-patch32` | Embedding Service | Image & text embeddings (512-dim) | FP16 (half-precision) | 151M | 293 MB |
+| `llava-hf/llava-1.5-7b-hf` | Embedding Service | Image description generation | 4-bit NF4 (bitsandbytes, double quantization) | 7B | 3.8 GB |
+| `IDEA-Research/grounding-dino-base` | Detection Service | Zero-shot object detection | FP16 (half-precision) | 172M | 448 MB |
 
 ### Model Details
 
@@ -80,37 +82,48 @@ All three models are downloaded from **HuggingFace Hub**, quantized once via `sc
 #### LLaVA — `llava-hf/llava-1.5-7b-hf`
 - **Architecture**: LLaVA 1.5 (Vicuna-7B language model + CLIP vision encoder)
 - **Quantization**: 4-bit NF4 via bitsandbytes with double quantization (`bnb_4bit_use_double_quant=True`), compute dtype FP16
+- **Loaded via**: `AutoModelForImageTextToText` + `AutoProcessor` (HuggingFace Transformers 4.47+)
 - **Output format**: Dot-separated object list — e.g., `apple.banana.table.chair`
 - **Used for**: Generating structured text descriptions of indexed images. These descriptions are later used for prompt augmentation in the detection pipeline.
 
 #### Grounding DINO — `IDEA-Research/grounding-dino-base`
 - **Architecture**: DINO (DETR with Improved deNoising anchOr boxes) + grounded pre-training
-- **Quantization**: 8-bit INT8 via bitsandbytes
+- **Saved format**: FP16 (half-precision). Grounding DINO does not support `device_map='auto'` with bitsandbytes quantization in Transformers 4.47, so we save it in FP16 instead (~448 MB — small enough that FP16 is efficient).
 - **Used for**: Zero-shot object detection — given an image and a text prompt (e.g., `"apple. car. person."`), outputs bounding boxes with labels and confidence scores.
 - **Prompt augmentation**: The detection prompt is augmented with descriptions from similar indexed images found via Elasticsearch KNN search.
 
 ### Quantization Workflow
 
 ```
-HuggingFace Hub                    Docker Volume
-─────────────────                  ──────────────────────────────────
-openai/clip-vit-base-patch32  ──►  /models/quantized/clip-vit-base-patch32-8bit/
-  (FP32, ~600 MB download)            (FP16, ~300 MB saved)
+HuggingFace Hub              Local: ./models/cache/         Local: ./models/quantized/
+─────────────────            ──────────────────────         ──────────────────────────────
+openai/clip-vit-base-patch32  ──► cache/hub/clip-*           ──► clip-vit-base-patch32-8bit/
+  (FP32, ~600 MB)                (original backup)               (FP16, 293 MB)
 
-llava-hf/llava-1.5-7b-hf     ──►  /models/quantized/llava-1.5-7b-4bit/
-  (FP16, ~14 GB download)             (4-bit NF4, ~4 GB saved)
+llava-hf/llava-1.5-7b-hf     ──► cache/hub/llava-*          ──► llava-1.5-7b-4bit/
+  (FP16, ~14 GB)                 (original backup)               (4-bit NF4, 3.8 GB)
 
-IDEA-Research/grounding-dino  ──►  /models/quantized/grounding-dino-base-8bit/
-  -base (FP32, ~900 MB download)       (INT8, ~200 MB saved)
+IDEA-Research/grounding-dino  ──► cache/hub/dino-*           ──► grounding-dino-base-fp16/
+  -base (FP32, ~900 MB)          (original backup)               (FP16, 448 MB)
 ```
+
+> **Both directories are on your local disk.** If HuggingFace ever removes these models, you still have the original weights in `./models/cache/` and the quantized versions in `./models/quantized/`. These directories are excluded from git (via `.gitignore`) since they are too large for GitHub.
 
 ### VRAM Requirements
 
 | Configuration | VRAM Needed | Notes |
 |---|---|---|
-| All 3 models loaded | ~6 GB | LLaVA 4-bit (~3.5 GB) + CLIP FP16 (~0.3 GB) + DINO 8-bit (~0.5 GB) + overhead |
-| Embedding only (CLIP + LLaVA) | ~4 GB | Sufficient for indexing pipeline |
-| Detection only (DINO) | ~1 GB | Sufficient for detection pipeline |
+| All 3 models loaded | ~6.5 GB | LLaVA 4-bit (~3.8 GB) + CLIP FP16 (~0.3 GB) + DINO FP16 (~0.9 GB) + overhead |
+| Embedding only (CLIP + LLaVA) | ~4.5 GB | Sufficient for indexing pipeline |
+| Detection only (DINO) | ~1.5 GB | Sufficient for detection pipeline |
+
+### Disk Space Requirements
+
+| Directory | Size | Contents |
+|---|---|---|
+| `models/cache/` | ~16 GB | Original full-precision weights (HuggingFace download cache) |
+| `models/quantized/` | ~4.5 GB | Quantized/FP16 weights used for inference |
+| **Total** | **~20.5 GB** | Both directories combined |
 
 > **Note**: Tested on NVIDIA RTX 4070 Laptop GPU (8 GB VRAM). All 3 models fit in memory simultaneously.
 
@@ -119,47 +132,87 @@ IDEA-Research/grounding-dino  ──►  /models/quantized/grounding-dino-base-8
 - **Docker** + **Docker Compose** v2
 - **NVIDIA GPU** with CUDA support (recommended)
 - **NVIDIA Container Toolkit** (for GPU access in Docker)
-- At least **16GB RAM** (32GB recommended for all 3 models)
+- At least **16 GB RAM** (32 GB recommended for all 3 models)
+- At least **~21 GB free disk space** for model weights (cache + quantized)
 
 ## Quick Start
 
-### Step 1: Build images
+### Step 1: Clone the repository
+
+```bash
+git clone https://github.com/<your-username>/agentic_multiModalities_ObjectDetection_project_.git
+cd agentic_multiModalities_ObjectDetection_project_
+```
+
+> After cloning, the `models/cache/` and `models/quantized/` directories will be empty (model weights are not stored in git).
+
+### Step 2: Build Docker images
 
 ```bash
 sudo docker compose build
 ```
 
-### Step 2: Download & quantize models (run once)
+This builds:
+- `ml_base` — shared PyTorch + Transformers + bitsandbytes base image (built once, reused by ML services)
+- `embedding_service`, `detection_service` — ML services inheriting from `ml_base`
+- `storage_service`, `api_gateway` — lightweight Python services
+- `frontend` — React app served via Nginx
 
-This downloads all 3 models from HuggingFace, quantizes them, and saves the quantized weights to a persistent Docker volume. Only needs to be run once — subsequent starts skip this step.
+### Step 3: Download & quantize models (run once)
+
+This downloads all 3 models from HuggingFace, quantizes them, and saves everything locally:
 
 ```bash
 sudo docker compose --profile quantize run --rm quantize_models
 ```
 
-You can also quantize individual models:
+After completion, your local directory will contain:
+
+```
+models/
+├── cache/                              ← HuggingFace download cache (~16 GB)
+│   └── hub/                               Original full-precision weights (your backup)
+│       ├── models--openai--clip-vit-base-patch32/
+│       ├── models--llava-hf--llava-1.5-7b-hf/
+│       └── models--IDEA-Research--grounding-dino-base/
+└── quantized/                          ← Quantized weights (~4.5 GB total)
+    ├── clip-vit-base-patch32-8bit/        CLIP in FP16 (293 MB)
+    ├── llava-1.5-7b-4bit/                 LLaVA in 4-bit NF4 (3.8 GB)
+    └── grounding-dino-base-fp16/          Grounding DINO in FP16 (448 MB)
+```
+
+**Time estimate**: ~2-4 hours depending on internet speed (LLaVA alone is ~14 GB download).
+
+You can also quantize individual models or force re-quantization:
 
 ```bash
 # Quantize only CLIP
-sudo docker compose --profile quantize run --rm quantize_models \
-  python /app/scripts/quantize_models.py --models clip
+sudo docker compose --profile quantize run --rm quantize_models --models clip
 
 # Quantize only LLaVA
-sudo docker compose --profile quantize run --rm quantize_models \
-  python /app/scripts/quantize_models.py --models llava
+sudo docker compose --profile quantize run --rm quantize_models --models llava
 
-# Re-quantize all (force overwrite)
-sudo docker compose --profile quantize run --rm quantize_models \
-  python /app/scripts/quantize_models.py --models all --force
+# Quantize only Grounding DINO
+sudo docker compose --profile quantize run --rm quantize_models --models dino
+
+# Re-quantize all (force overwrite existing)
+sudo docker compose --profile quantize run --rm quantize_models --models all --force
 ```
 
-### Step 3: Start services (GPU)
+**Verify models are ready:**
+
+```bash
+ls models/quantized/
+# Expected: clip-vit-base-patch32-8bit  llava-1.5-7b-4bit  grounding-dino-base-fp16
+```
+
+### Step 4: Start all services
 
 ```bash
 sudo docker compose up -d
 ```
 
-### CPU only
+### CPU only (no NVIDIA GPU)
 
 ```bash
 sudo docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
@@ -246,6 +299,13 @@ Response: { status, services: {embedding_service, storage_service, detection_ser
 ```
 ├── docker-compose.yml              # Main orchestration (GPU)
 ├── docker-compose.cpu.yml          # CPU override
+├── models/                             # Model weights (NOT in git — .gitignore'd)
+│   ├── cache/                          #   HuggingFace download cache (original backups)
+│   │   └── hub/                        #   Full-precision weights from HuggingFace
+│   └── quantized/                      #   Quantized weights (used by services)
+│       ├── clip-vit-base-patch32-8bit/ #     CLIP FP16 (293 MB)
+│       ├── llava-1.5-7b-4bit/          #     LLaVA 4-bit NF4 (3.8 GB)
+│       └── grounding-dino-base-fp16/   #     Grounding DINO FP16 (448 MB)
 ├── scripts/
 │   └── quantize_models.py          # Download → quantize → save models
 ├── services/
@@ -292,14 +352,21 @@ Response: { status, services: {embedding_service, storage_service, detection_ser
 └── sample_images/                  # Test images
 ```
 
-### Docker Volumes
+### Local Directories (bind mounts)
 
-| Volume | Path in Container | Purpose |
+| Host Path | Container Path | Purpose |
 |---|---|---|
-| `model_cache` | `/root/.cache/huggingface` | HuggingFace download cache (raw model files) |
-| `quantized_models` | `/models/quantized` | Saved quantized model weights (used at inference) |
-| `es_data` | `/usr/share/elasticsearch/data` | Elasticsearch index data |
-| `mongo_data` | `/data/db` | MongoDB database files |
+| `./models/cache/` | `/root/.cache/huggingface` | HuggingFace download cache — original full-precision model weights. Acts as a **backup** in case models are removed from HuggingFace. |
+| `./models/quantized/` | `/models/quantized` | Quantized model weights used for inference. Created by `quantize_models` service, mounted read-only in ML services. |
+
+### Docker Volumes (managed by Docker)
+
+| Volume | Container Path | Purpose |
+|---|---|---|
+| `es_data` | `/usr/share/elasticsearch/data` | Elasticsearch index data (embeddings + metadata) |
+| `mongo_data` | `/data/db` | MongoDB database files (images stored via GridFS) |
+
+> **Why bind mounts for models?** So you can see, inspect, and back up the model files directly on your filesystem. Docker volumes are hidden inside `/var/lib/docker/volumes/` and are harder to manage. Since the models are ~20 GB total, having them visible ensures you never accidentally lose them.
 
 ## Design Principles
 

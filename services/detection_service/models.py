@@ -10,7 +10,7 @@ import os
 import torch
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection, BitsAndBytesConfig
+from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
 # Base directory for pre-quantized model weights
 QUANTIZED_MODELS_DIR = os.environ.get("QUANTIZED_MODELS_DIR", "/models/quantized")
@@ -42,41 +42,32 @@ class GroundingDINODetector:
     """
 
     HF_MODEL_NAME = "IDEA-Research/grounding-dino-base"
-    QUANTIZED_NAME = "grounding-dino-base-8bit"
+    QUANTIZED_NAME = "grounding-dino-base-fp16"
 
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         quantized_path = os.path.join(QUANTIZED_MODELS_DIR, self.QUANTIZED_NAME)
 
         if os.path.exists(quantized_path) and os.listdir(quantized_path):
-            logger.info(f"Loading pre-quantized Grounding DINO from {quantized_path}")
+            logger.info(f"Loading pre-saved Grounding DINO from {quantized_path}")
             self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
                 quantized_path,
-                device_map="auto" if self.device == "cuda" else None,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
             )
             self.processor = AutoProcessor.from_pretrained(quantized_path)
         else:
             logger.warning(
-                f"Quantized Grounding DINO not found at {quantized_path}. "
+                f"Saved Grounding DINO not found at {quantized_path}. "
                 f"Run 'python scripts/quantize_models.py --models dino' first. "
-                f"Falling back to on-the-fly quantization."
+                f"Falling back to downloading from HuggingFace."
             )
-            quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-            if self.device == "cuda":
-                self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                    self.HF_MODEL_NAME,
-                    quantization_config=quantization_config,
-                    device_map="auto",
-                )
-            else:
-                self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                    self.HF_MODEL_NAME,
-                )
-                self.model.to(self.device)
+            self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                self.HF_MODEL_NAME,
+                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+            )
             self.processor = AutoProcessor.from_pretrained(self.HF_MODEL_NAME)
 
-        if self.device == "cpu":
-            self.model.to(self.device)
+        self.model.to(self.device)
         self.model.eval()
         logger.info("Grounding DINO model loaded successfully")
 

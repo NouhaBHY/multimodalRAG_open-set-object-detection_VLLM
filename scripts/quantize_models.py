@@ -4,8 +4,8 @@ Downloads full-precision models from HuggingFace, quantizes them,
 and saves the quantized versions to disk for efficient inference.
 
 Models:
-  - CLIP (openai/clip-vit-base-patch32) → 8-bit quantization
-  - LLaVA (llava-hf/llava-1.5-7b-hf) → 4-bit NF4 quantization
+  - CLIP (openai/clip-vit-base-patch32) → FP16
+  - LLaVA 1.5 (llava-hf/llava-1.5-7b-hf) → 4-bit NF4 quantization
   - Grounding DINO (IDEA-Research/grounding-dino-base) → 8-bit quantization
 
 Usage:
@@ -22,8 +22,8 @@ import torch
 from transformers import (
     CLIPModel,
     CLIPProcessor,
-    LlavaForConditionalGeneration,
     AutoProcessor,
+    AutoModelForImageTextToText,
     AutoModelForZeroShotObjectDetection,
     BitsAndBytesConfig,
 )
@@ -51,8 +51,8 @@ MODELS = {
     },
     "dino": {
         "hf_name": "IDEA-Research/grounding-dino-base",
-        "output_name": "grounding-dino-base-8bit",
-        "description": "Grounding DINO Base (8-bit quantized)",
+        "output_name": "grounding-dino-base-fp16",
+        "description": "Grounding DINO Base (FP16)",
     },
 }
 
@@ -90,7 +90,7 @@ def quantize_clip(output_dir: str) -> None:
 
 
 def quantize_llava(output_dir: str) -> None:
-    """Download LLaVA, quantize to 4-bit NF4, and save."""
+    """Download LLaVA 1.5, quantize to 4-bit NF4, and save."""
     cfg = MODELS["llava"]
     save_path = os.path.join(output_dir, cfg["output_name"])
 
@@ -107,11 +107,12 @@ def quantize_llava(output_dir: str) -> None:
         bnb_4bit_quant_type="nf4",
     )
 
-    model = LlavaForConditionalGeneration.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         cfg["hf_name"],
         quantization_config=quantization_config,
         device_map="auto",
         torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
     )
 
     processor = AutoProcessor.from_pretrained(cfg["hf_name"])
@@ -129,7 +130,12 @@ def quantize_llava(output_dir: str) -> None:
 
 
 def quantize_dino(output_dir: str) -> None:
-    """Download Grounding DINO, quantize to 8-bit, and save."""
+    """Download Grounding DINO and save as FP16.
+    
+    GroundingDinoForObjectDetection does not support device_map='auto'
+    in transformers 4.47+, so bitsandbytes quantization is not possible.
+    DINO is small (~933MB FP32, ~467MB FP16) so FP16 is efficient enough.
+    """
     cfg = MODELS["dino"]
     save_path = os.path.join(output_dir, cfg["output_name"])
 
@@ -139,24 +145,21 @@ def quantize_dino(output_dir: str) -> None:
 
     logger.info(f"Downloading Grounding DINO: {cfg['hf_name']}")
 
-    quantization_config = BitsAndBytesConfig(load_in_8bit=True)
-
     model = AutoModelForZeroShotObjectDetection.from_pretrained(
         cfg["hf_name"],
-        quantization_config=quantization_config,
-        device_map="auto",
+        torch_dtype=torch.float16,
     )
 
     processor = AutoProcessor.from_pretrained(cfg["hf_name"])
 
-    logger.info(f"Saving quantized Grounding DINO to {save_path}")
+    logger.info(f"Saving Grounding DINO (FP16) to {save_path}")
     os.makedirs(save_path, exist_ok=True)
     model.save_pretrained(save_path)
     processor.save_pretrained(save_path)
 
-    logger.info(f"Grounding DINO quantized and saved successfully.")
+    logger.info(f"Grounding DINO saved successfully.")
 
-    # Free GPU memory
+    # Free memory
     del model
     torch.cuda.empty_cache()
 

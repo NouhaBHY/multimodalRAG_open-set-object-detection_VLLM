@@ -13,8 +13,8 @@ from PIL import Image
 from transformers import (
     CLIPModel,
     CLIPProcessor,
-    LlavaForConditionalGeneration,
     AutoProcessor,
+    AutoModelForImageTextToText,
     BitsAndBytesConfig,
 )
 
@@ -87,7 +87,8 @@ class CLIPEmbedder:
 
 class LLaVADescriber:
     """
-    Generates structured text descriptions of images using LLaVA (llava-hf/llava-1.5-7b-hf).
+    Generates structured text descriptions of images using LLaVA 1.5
+    (llava-hf/llava-1.5-7b-hf).
     Loads pre-quantized 4-bit NF4 weights from disk (saved by scripts/quantize_models.py).
     Output format: "object1.object2.object3"
     """
@@ -107,10 +108,11 @@ class LLaVADescriber:
 
         if os.path.exists(quantized_path) and os.listdir(quantized_path):
             logger.info(f"Loading pre-quantized LLaVA from {quantized_path}")
-            self.model = LlavaForConditionalGeneration.from_pretrained(
+            self.model = AutoModelForImageTextToText.from_pretrained(
                 quantized_path,
                 device_map="auto",
                 torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
             )
             self.processor = AutoProcessor.from_pretrained(quantized_path)
         else:
@@ -126,14 +128,15 @@ class LLaVADescriber:
                 bnb_4bit_quant_type="nf4",
             )
             if self.device == "cuda":
-                self.model = LlavaForConditionalGeneration.from_pretrained(
+                self.model = AutoModelForImageTextToText.from_pretrained(
                     self.HF_MODEL_NAME,
                     quantization_config=quantization_config,
                     device_map="auto",
                     torch_dtype=torch.float16,
+                    low_cpu_mem_usage=True,
                 )
             else:
-                self.model = LlavaForConditionalGeneration.from_pretrained(
+                self.model = AutoModelForImageTextToText.from_pretrained(
                     self.HF_MODEL_NAME,
                     torch_dtype=torch.float32,
                     device_map="auto",
@@ -142,7 +145,7 @@ class LLaVADescriber:
             self.processor = AutoProcessor.from_pretrained(self.HF_MODEL_NAME)
 
         self.model.eval()
-        logger.info("LLaVA model loaded successfully")
+        logger.info("LLaVA 1.5 model loaded successfully")
 
     def generate_description(self, image: Image.Image) -> str:
         """

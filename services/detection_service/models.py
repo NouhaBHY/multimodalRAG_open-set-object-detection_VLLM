@@ -44,15 +44,23 @@ class GroundingDINODetector:
     HF_MODEL_NAME = "IDEA-Research/grounding-dino-base"
     QUANTIZED_NAME = "grounding-dino-base-fp16"
 
+    # Max image size (longest side) to avoid OOM on 8 GB GPUs
+    MAX_IMAGE_SIZE = 800
+
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # NOTE: Grounding DINO's HF implementation has internal dtype mismatches
+        # between its BERT text backbone (produces FP32) and encoder layers.
+        # The native groundingdino package (IDEA-Research) runs in FP32 for the
+        # same reason.  We must load in FP32 to avoid RuntimeError.
+        self.dtype = torch.float32
         quantized_path = os.path.join(QUANTIZED_MODELS_DIR, self.QUANTIZED_NAME)
 
         if os.path.exists(quantized_path) and os.listdir(quantized_path):
             logger.info(f"Loading pre-saved Grounding DINO from {quantized_path}")
             self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
                 quantized_path,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                torch_dtype=self.dtype,
             )
             self.processor = AutoProcessor.from_pretrained(quantized_path)
         else:
@@ -63,13 +71,13 @@ class GroundingDINODetector:
             )
             self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
                 self.HF_MODEL_NAME,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                torch_dtype=self.dtype,
             )
             self.processor = AutoProcessor.from_pretrained(self.HF_MODEL_NAME)
 
         self.model.to(self.device)
         self.model.eval()
-        logger.info("Grounding DINO model loaded successfully")
+        logger.info(f"Grounding DINO model loaded successfully on {self.device} (FP32)")
 
     def detect(
         self,
@@ -94,19 +102,34 @@ class GroundingDINODetector:
         if not prompt.endswith("."):
             prompt = prompt + "."
 
+        # Resize large images to reduce VRAM usage during inference
+        original_size = image.size  # (w, h)
+        w, h = original_size
+        longest = max(w, h)
+        if longest > self.MAX_IMAGE_SIZE:
+            scale = self.MAX_IMAGE_SIZE / longest
+            image = image.resize(
+                (int(w * scale), int(h * scale)), Image.LANCZOS
+            )
+            logger.info(f"Resized image from {original_size} to {image.size} for detection")
+
+        # Free cached GPU memory before inference
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+
         inputs = self.processor(images=image, text=prompt, return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
             outputs = self.model(**inputs)
 
-        # Post-process
+        # Post-process — use original image size for correct box scaling
         results = self.processor.post_process_grounded_object_detection(
             outputs,
             inputs["input_ids"],
             box_threshold=box_threshold,
             text_threshold=text_threshold,
-            target_sizes=[image.size[::-1]],  # (height, width)
+            target_sizes=[original_size[::-1]],  # (height, width)
         )
 
         result = results[0]

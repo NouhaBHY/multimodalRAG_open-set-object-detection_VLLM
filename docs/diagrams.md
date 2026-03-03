@@ -12,7 +12,7 @@ graph TB
     subgraph "Microservices"
         subgraph "ML Base Image<br/>(PyTorch + Transformers 4.47 — built once)"
             ES[Embedding Service<br/>Flask - Port 5001<br/>CLIP FP16 + LLaVA 4-bit]
-            DS[Detection Service<br/>Flask - Port 5003<br/>Grounding DINO FP16]
+            DS[Detection Service<br/>Flask - Port 5003<br/>Grounding DINO FP16→FP32]
         end
         SS[Storage Service<br/>Flask - Port 5002<br/>ES + MongoDB ops]
     end
@@ -187,8 +187,10 @@ classDiagram
         -model: AutoModelForZeroShotObjectDetection
         -processor: AutoProcessor
         -device: str
+        -dtype: torch.float32
+        -MAX_IMAGE_SIZE: 800
         -QUANTIZED_NAME: grounding-dino-base-fp16
-        -format: FP16 (448 MB)
+        -format: FP16 disk → FP32 runtime (~900 MB VRAM)
         +detect(image, prompt, threshold) DetectionResult
         +annotate_image(image, result) Image
     }
@@ -270,7 +272,7 @@ classDiagram
 |---|---|---|---|
 | CLIP ViT-B/32 | `openai/clip-vit-base-patch32` | FP16 | ~300 MB |
 | LLaVA 1.5 7B | `llava-hf/llava-1.5-7b-hf` | 4-bit NF4 | ~3.8 GB |
-| Grounding DINO | `IDEA-Research/grounding-dino-base` | FP16 | ~900 MB |
+| Grounding DINO | `IDEA-Research/grounding-dino-base` | FP16 on disk → FP32 at runtime | ~900 MB |
 | **Total (all 3)** | | | **~5-6.5 GB** |
 
 > Tested on NVIDIA RTX 4070 Laptop GPU (8 GB VRAM). All 3 models load simultaneously with headroom for inference buffers.

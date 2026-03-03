@@ -69,7 +69,7 @@ The original (full-precision) downloads are cached in `./models/cache/` so you k
 |---|---|---|---|---|---|
 | `openai/clip-vit-base-patch32` | Embedding Service | Image & text embeddings (512-dim) | FP16 (half-precision) | 151M | 293 MB |
 | `llava-hf/llava-1.5-7b-hf` | Embedding Service | Image description generation | 4-bit NF4 (bitsandbytes, double quantization) | 7B | 3.8 GB |
-| `IDEA-Research/grounding-dino-base` | Detection Service | Zero-shot object detection | FP16 (half-precision) | 172M | 448 MB |
+| `IDEA-Research/grounding-dino-base` | Detection Service | Zero-shot object detection | FP16 on disk → FP32 at runtime | 172M | 448 MB |
 
 ### Model Details
 
@@ -88,7 +88,9 @@ The original (full-precision) downloads are cached in `./models/cache/` so you k
 
 #### Grounding DINO — `IDEA-Research/grounding-dino-base`
 - **Architecture**: DINO (DETR with Improved deNoising anchOr boxes) + grounded pre-training
-- **Saved format**: FP16 (half-precision). Grounding DINO does not support `device_map='auto'` with bitsandbytes quantization in Transformers 4.47, so we save it in FP16 instead (~448 MB — small enough that FP16 is efficient).
+- **Saved format**: FP16 on disk (448 MB). Grounding DINO does not support `device_map='auto'` with bitsandbytes quantization in Transformers 4.47, so we save it in FP16.
+- **Runtime precision**: **FP32**. The model is upcast to FP32 at load time because its internal BERT text backbone produces FP32 features that clash with FP16 encoder weights, causing `RuntimeError: mat1 and mat2 must have the same dtype`. Loading in FP32 avoids this (~900 MB VRAM).
+- **Image resizing**: Input images are automatically resized so the longest side is at most **800 px** before inference, reducing VRAM usage for activation tensors. Bounding box coordinates are mapped back to the original image dimensions.
 - **Used for**: Zero-shot object detection — given an image and a text prompt (e.g., `"apple. car. person."`), outputs bounding boxes with labels and confidence scores.
 - **Prompt augmentation**: The detection prompt is augmented with descriptions from similar indexed images found via Elasticsearch KNN search.
 
@@ -113,9 +115,11 @@ IDEA-Research/grounding-dino  ──► cache/hub/dino-*           ──► gro
 
 | Configuration | VRAM Needed | Notes |
 |---|---|---|
-| All 3 models loaded | ~6.5 GB | LLaVA 4-bit (~3.8 GB) + CLIP FP16 (~0.3 GB) + DINO FP16 (~0.9 GB) + overhead |
+| All 3 models loaded | ~6.5 GB | LLaVA 4-bit (~3.8 GB) + CLIP FP16 (~0.3 GB) + DINO FP32 (~0.9 GB) + overhead |
 | Embedding only (CLIP + LLaVA) | ~4.5 GB | Sufficient for indexing pipeline |
-| Detection only (DINO) | ~1.5 GB | Sufficient for detection pipeline |
+| Detection only (DINO) | ~1.5 GB | DINO loaded in FP32 (~0.9 GB) + inference buffers |
+
+> **Why FP32 for Grounding DINO?** HuggingFace's Transformers implementation of Grounding DINO has an internal dtype conflict: the BERT text backbone always outputs FP32 tensors, but the vision encoder expects matching dtypes. Loading the full model in FP16 triggers `RuntimeError: mat1 and mat2 must have the same dtype`. Loading in FP32 resolves this. Images are resized to max 800 px and `torch.cuda.empty_cache()` is called before each inference to stay within 8 GB VRAM.
 
 ### Disk Space Requirements
 
